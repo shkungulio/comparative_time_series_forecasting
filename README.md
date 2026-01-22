@@ -1,3 +1,5 @@
+[![Project Cover](resources/cover.png)](comparative_time_series_forecasting.pdf)
+
 # Comparative Time Series Forecasting of Major Technology Stocks
 
 Historical stock prices of major technology companies exhibit distinct trends, volatility patterns, and market dynamics. Understanding these behaviors is essential for forecasting price movements and assessing financial risk.
