@@ -1,0 +1,120 @@
+---
+title: |
+  \vspace*{\fill}
+  \fontsize{36}{40}\selectfont \textbf {Comparative Time Series Forecasting of Major Technology Stocks}
+author: |
+  \fontsize{24}{28}\selectfont Seif H. Kungulio
+date: |
+  \fontsize{18}{22}\selectfont January 22, 2026
+  \ \vspace*{\fill}
+output: 
+  pdf_document:
+    latex_engine: xelatex
+    toc: false
+    highlight: espresso
+    include:
+      in_header: resources/header.tex
+header-includes:
+  # Font and color setup
+  - \usepackage{xcolor}
+  - \definecolor{brand}{HTML}{0060ff}
+  - \definecolor{subbrand}{HTML}{212121}
+  - \usepackage{titlesec}
+  - \titleformat{\section}{\Large\bfseries\color{brand}}{\thesection}{1em}{}
+  - \titleformat{\subsection}{\large\bfseries\color{subbrand}}{\thesubsection}{0.75em}{}
+  - \usepackage[most]{tcolorbox}
+  - \tcbset{colback=white, colframe=brand, coltitle=white, fonttitle=\bfseries}
+  - \usepackage{fancyhdr}
+  - \pagestyle{fancy}
+  - \fancyhead[L]{\textcolor{brand}{Comparative Time Series Forecasting}}
+  - \fancyhead[R]{\textcolor{subbrand}{Seif H. Kungulio}}
+  - \fancyfoot[C]{\thepage}
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width=12, fig.height=8)
+
+# Set default CRAN mirror
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+#Install the following libraries if required
+# List of required packages
+required_pkgs <- c() 
+
+# Install and load each package
+for (pkg in required_pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+  library(pkg, character.only = TRUE)
+}
+
+#theme_set(theme_test(base_size = 14))
+#options(dplyr.summarise.inform = FALSE)
+```
+
+\pagenumbering{gobble}
+
+\newpage
+\thispagestyle{plain}
+&nbsp;
+
+\newpage
+\pagenumbering{roman}
+\tableofcontents
+
+\newpage
+\pagenumbering{arabic}
+
+# **Business Understanding**
+
+
+
+
+\newpage
+# **Data Understanding**
+
+
+
+
+\newpage
+# **Data Preparation**
+
+
+
+
+\newpage
+# **Modeling**
+
+
+
+
+\newpage
+# **Evaluation**
+
+
+
+
+\newpage
+# **Deployment**
+
+
+
+
+\newpage
+# **Conclusion**
+
+
+
+
+\newpage
+# **References**
+
+
+
+\newpage
+# **Appendix**
+
+
