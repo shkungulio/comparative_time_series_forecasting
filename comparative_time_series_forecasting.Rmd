@@ -26,7 +26,7 @@ header-includes:
   - \tcbset{colback=white, colframe=brand, coltitle=white, fonttitle=\bfseries}
   - \usepackage{fancyhdr}
   - \pagestyle{fancy}
-  - \fancyhead[L]{\textcolor{brand}{Comparative Time Series Forecasting}}
+  - \fancyhead[L]{\textcolor{brand}{Comparative Time Series Forecasting (AAPL, MSFT, TSLA, AMZN)}}
   - \fancyhead[R]{\textcolor{subbrand}{Seif H. Kungulio}}
   - \fancyfoot[C]{\thepage}
 editor_options:
@@ -41,7 +41,8 @@ options(repos = c(CRAN = "https://cloud.r-project.org"))
 
 #Install the following libraries if required
 # List of required packages
-required_pkgs <- c() 
+required_pkgs <- c("tidyverse", "lubridate", "forecast", "tseries", 
+                   "quantmod", "xts", "zoo", "PerformanceAnalytics") 
 
 # Install and load each package
 for (pkg in required_pkgs) {
@@ -51,8 +52,8 @@ for (pkg in required_pkgs) {
   library(pkg, character.only = TRUE)
 }
 
-#theme_set(theme_test(base_size = 14))
-#options(dplyr.summarise.inform = FALSE)
+theme_set(theme_test(base_size = 14))
+options(dplyr.summarise.inform = FALSE)
 ```
 
 \pagenumbering{gobble}
@@ -68,26 +69,210 @@ for (pkg in required_pkgs) {
 \newpage
 \pagenumbering{arabic}
 
+
 # **Business Understanding**
+## Problem Statement
+Historical stock prices of major technology companies exhibit distinct trends, volatility patterns, and market dynamics. Understanding these behaviors is essential for forecasting price movements and assessing financial risk.
 
+The objective of this project is to perform a comparative time series analysis of Apple, Microsoft, Tesla, and Amazon stock prices using historical market data. The project aims to identify trends, seasonality, and volatility across each stock and develop forecasting models to predict short-term price movements. Model performance will be evaluated to assess forecasting accuracy and differences in predictability across companies.
 
+## Business Objectives
+* Compare trend, seasonality, and volatility across AAPL, MSFT, TSLA, and AMZN.
+* Forecast short-term price movements using multiple models.
+* Evaluate models using time-series appropriate validation and accuracy metrics.
+* Rank stocks by forecastability (which stock is easier/harder to predict).
+
+## Success Criteria
+* Clean daily dataset per stock with aligned calendars.
+* Baseline model + at least one statistical forecasting model per stock.
+* Residual diagnostics + accuracy metrics (RMSE/MAE/MAPE).
+* Clear comparative summary and recommendation.
 
 
 \newpage
 # **Data Understanding**
+## Data Source
+Historical stock price data for Apple (AAPL), Microsoft (MSFT), Tesla (TSLA), and Amazon (AMZN) will be sourced from Yahoo Finance using the `quantmod` package in R. The dataset will include daily adjusted closing prices, volume, and other relevant financial metrics from January 1, 2016, to current date.
 
+## Stock Tickers
+* Apple Inc. (AAPL)
+* Microsoft Corporation (MSFT)
+* Tesla, Inc. (TSLA)
+* Amazon.com, Inc. (AMZN)
 
+```{r data-fetching}
+# Define stock tickers and date range
+tickers <- c("AAPL", "MSFT", "TSLA", "AMZN")
+start_date <- as.Date("2016-01-01")
+end_date <- Sys.Date()
+```
+
+## Pull Historical Prices
+```{r data-pulling}
+prices_list <- map(
+  tickers,
+  ~ getSymbols(
+    .x,
+    src = "yahoo",
+    from = start_date,
+    to = end_date,
+    auto.assign = FALSE
+  )
+)
+names(prices_list) <- tickers
+
+# Preview data
+map(prices_list, head)
+map(prices_list, tail)
+```
+
+## Extract Adjusted Close Prices
+```{r adjusted-close}
+close_list <- map(prices_list, ~ Cl(.x))
+names(close_list) <- tickers
+
+# Combine into a single xts with aligned dates
+close_xts <- do.call(merge, close_list)
+colnames(close_xts) <- tickers
+
+head(close_xts)
+tail(close_xts)
+```
+
+## Missing Dates / Alignment
+Markets close on weekends/holidays; we keep the market calendar as-is.
+```{r missing-dates}
+close_xts_aligned <- na.omit(close_xts)
+dim(close_xts); dim(close_xts_aligned)
+```
 
 
 \newpage
 # **Data Preparation**
+## Convert to Tidy Data
+```{r tidy-data}
+close_df <- close_xts_aligned %>%
+  fortify.zoo() %>%
+  as_tibble() %>%
+  rename(date = Index) %>%
+  pivot_longer(-date, names_to = "ticker", values_to = "close")
+
+glimpse(close_df)
+```
+
+## Create Returns (Risk/Volatility Lens)
+Returns analysis is essential for risk assessment.
+```{r returns-calculation}
+returns_xts <- na.omit(Return.calculate(close_xts_aligned, method = "log"))
+colnames(returns_xts) <- tickers
+
+returns_df <- returns_xts %>%
+  fortify.zoo() %>%
+  as_tibble() %>%
+  rename(date = Index) %>%
+  pivot_longer(-date, names_to = "ticker", values_to = "log_return")
+
+summary(returns_df$log_return)
+```
 
 
+\newpage
+# **Exploratory Data Analysis (EDA)**
+## Price Trends
+```{r price-trends}
+close_df %>%
+  ggplot(aes(date, close, color = ticker)) +
+  geom_line() +
+  labs(
+    title = "Closing Prices Over Time (AAPL, MSFT, TSLA, AMZN)",
+    x = "Date", y = "Close Price (USD)"
+  )
+```
+
+## Normalize Prices (Indexed to 100)
+```{r normalized-prices}
+close_indexed <- close_df %>%
+  group_by(ticker) %>%
+  arrange(date) %>%
+  mutate(index_100 = 100 * close / first(close)) %>%
+  ungroup()
+
+close_indexed %>%
+  ggplot(aes(date, index_100, color = ticker)) +
+  geom_line() +
+  labs(
+    title = "Indexed Closing Prices (Start = 100)",
+    x = "Date", y = "Index"
+  )
+```
+
+## Return & Drawdown Summary
+```{r returns-drawdown}
+charts.PerformanceSummary(
+  returns_xts,
+  main = "Performance Summary: Daily Log Returns (All Stocks)")
+```
+
+## Volatility Comparison (Rolling Std. Dev.)
+```{r volatility-comparison}
+roll_n <- 20 # ~1 trading month
+roll_vol <- rollapply(returns_xts, 
+                      width = roll_n, 
+                      FUN = sd, 
+                      by.column = TRUE, 
+                      align = "right", 
+                      fill = NA) %>%
+  na.omit()
+
+roll_vol_df <- roll_vol %>%
+  fortify.zoo() %>%
+  as_tibble() %>%
+  rename(date = Index) %>%
+  pivot_longer(-date, 
+               names_to = "ticker", 
+               values_to = "roll_sd")
+
+roll_vol_df %>%
+  ggplot(aes(date, roll_sd, color = ticker)) +
+  geom_line() +
+  labs(
+    title = glue::glue("Rolling Volatility (Std Dev of Returns) - {roll_n} Trading Days"),
+    x = "Date", 
+    y = "Rolling SD"
+  )
+```
+
+## Decomposition (Monthly Aggregation)
+Classic decomposition is easiest on regular seasonal frequency.
+We convert daily close to monthly close and decompose per stock.
+
+<!-- ```{r decomposition} -->
+<!-- monthly_close_list <- map(close_list, ~ Cl(to.monthly(.x)) ) -->
+<!-- names(monthly_close_list) <- tickers -->
+
+<!-- decomp_plots <- function(x_xts, ticker_name){ -->
+<!--   ts_obj <- ts(as.numeric(x_xts), frequency = 12,  -->
+<!--                start = c(year(start(x_xts)),  -->
+<!--                          month(start(x_xts)))) -->
+<!--   dc <- decompose(ts_obj) -->
+<!--   plot(dc, main = paste("Decomposition:", ticker_name)) -->
+<!--   invisible(dc) -->
+<!-- } -->
+
+<!-- # Decompose each ticker (plots) -->
+<!-- decomps <- imap(monthly_close_list, ~ decomp_plots(.x, .y)) -->
+<!-- ``` -->
 
 
 \newpage
 # **Modeling**
+## Forecasting Design
+We’ll forecast short-term movement using:
 
+* Naive baseline (last value persists) - strong baseline in finance.
+* ARIMA (auto.arima) - standard statistical model for time series. 
+
+We’ll do a rolling-origin evaluation (time-series CV) AND a simple holdout for interpretability.
 
 
 
