@@ -20,15 +20,13 @@ Daily log returns were analyzed to assess risk and volatility characteristics. R
 ## Models Explored and Results
 Two benchmark forecasting approaches were evaluated for each stock using a fixed 60-day holdout window:
 
-Naive (Random Walk) Model – Serves as a strong financial baseline where the last observed value persists.
-
-ARIMA (auto.arima) – A classical statistical time series model that captures short-term autocorrelation and drift.
+- Naive (Random Walk) Model – Serves as a strong financial baseline where the last observed value persists.
+- ARIMA (auto.arima) – A classical statistical time series model that captures short-term autocorrelation and drift.
 
 Model performance was assessed using RMSE, MAE, and MAPE. Results demonstrated that model effectiveness is asset-specific:
 
-ARIMA outperformed the naive baseline for Apple and Amazon
-
-The naive model performed equally well or better for Microsoft and Tesla
+- ARIMA outperformed the naive baseline for Apple and Amazon
+- The naive model performed equally well or better for Microsoft and Tesla
 
 These findings reinforce an important practical insight: greater model complexity does not universally improve forecast accuracy, particularly in highly volatile or near-random-walk assets.
 
