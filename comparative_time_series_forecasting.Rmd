@@ -17,7 +17,7 @@ output:
 header-includes:
   # Font and color setup
   - \usepackage{xcolor}
-  - \definecolor{brand}{HTML}{0060ff}
+  - \definecolor{brand}{HTML}{8B0000}
   - \definecolor{subbrand}{HTML}{212121}
   - \usepackage{titlesec}
   - \titleformat{\section}{\Large\bfseries\color{brand}}{\thesection}{1em}{}
@@ -34,7 +34,7 @@ editor_options:
 ---
 
 ```{r setup, include=FALSE, message = FALSE, warning = FALSE}
-knitr::opts_chunk$set(echo = TRUE, fig.width=12, fig.height=8)
+knitr::opts_chunk$set(echo = TRUE, fig.width=14, fig.height=8)
 
 # Set default CRAN mirror
 options(repos = c(CRAN = "https://cloud.r-project.org"))
@@ -104,7 +104,7 @@ Historical stock price data for Apple (AAPL), Microsoft (MSFT), Tesla (TSLA), an
 # Define stock tickers and date range
 tickers <- c("AAPL", "MSFT", "TSLA", "AMZN")
 start_date <- as.Date("2016-01-01")
-end_date <- Sys.Date()
+end_date <- as.Date("2026-01-20")
 ```
 
 ## Pull Historical Prices
@@ -246,22 +246,26 @@ roll_vol_df %>%
 Classic decomposition is easiest on regular seasonal frequency.
 We convert daily close to monthly close and decompose per stock.
 
-<!-- ```{r decomposition} -->
-<!-- monthly_close_list <- map(close_list, ~ Cl(to.monthly(.x)) ) -->
-<!-- names(monthly_close_list) <- tickers -->
+```{r decomposition}
+monthly_close_list <- map(close_list, ~ Cl(to.monthly(.x)) )
+names(monthly_close_list) <- tickers
 
-<!-- decomp_plots <- function(x_xts, ticker_name){ -->
-<!--   ts_obj <- ts(as.numeric(x_xts), frequency = 12,  -->
-<!--                start = c(year(start(x_xts)),  -->
-<!--                          month(start(x_xts)))) -->
-<!--   dc <- decompose(ts_obj) -->
-<!--   plot(dc, main = paste("Decomposition:", ticker_name)) -->
-<!--   invisible(dc) -->
-<!-- } -->
+decomp_plots <- function(x_xts, ticker_name){
+  ts_obj <- ts(
+    as.numeric(x_xts), 
+    frequency = 12,
+    start = c(year(start(x_xts)), month(start(x_xts)))
+    )
+  dc <- decompose(ts_obj)
+  plot(dc)
+  title(main = paste("Decomposition:", ticker_name),
+        outer = TRUE, line = -1)
+  invisible(dc)
+}
 
-<!-- # Decompose each ticker (plots) -->
-<!-- decomps <- imap(monthly_close_list, ~ decomp_plots(.x, .y)) -->
-<!-- ``` -->
+# Decompose each ticker (plots)
+decomps <- imap(monthly_close_list, ~ decomp_plots(.x, .y))
+```
 
 
 \newpage
@@ -274,32 +278,192 @@ We’ll forecast short-term movement using:
 
 We’ll do a rolling-origin evaluation (time-series CV) AND a simple holdout for interpretability.
 
+## Helper Functions
+```{r helper-functions}
+make_train_test <- function(x, h = 60){
+  # x is a numeric vector or ts; h is forecast horizon
+  n <- length(x)
+  list(train = x[1:(n-h)], test = x[(n-h+1):n], h = h)
+}
+
+rmse <- function(actual, pred){
+  sqrt(mean((actual - pred)^2, na.rm = TRUE))
+}
+
+mae <- function(actual, pred){
+  mean(abs(actual - pred), na.rm = TRUE)
+}
+
+mape <- function(actual, pred){
+  mean(abs((actual - pred) / actual), na.rm = TRUE) * 100
+}
+```
+
+## Build Models per Stock
+```{r modeling}
+h <- 60  # forecast horizon ~ 3 months of trading days
+
+results <- map_dfr(tickers, function(tk){
+  x <- as.numeric(close_xts_aligned[, tk])
+  spl <- make_train_test(x, h = h)
+  train <- spl$train
+  test  <- spl$test
+  
+  # --- Naive baseline ---
+  fc_naive <- naive(train, h = h)
+  pred_naive <- as.numeric(fc_naive$mean)
+  
+  # --- ARIMA ---
+  fit_arima <- auto.arima(train)
+  fc_arima <- forecast(fit_arima, h = h)
+  pred_arima <- as.numeric(fc_arima$mean)
+  
+  tibble(
+    ticker = tk,
+    model  = c("Naive", "ARIMA"),
+    RMSE   = c(rmse(test, pred_naive), rmse(test, pred_arima)),
+    MAE    = c(mae(test, pred_naive),  mae(test, pred_arima)),
+    MAPE   = c(mape(test, pred_naive), mape(test, pred_arima))
+  )
+})
+
+results %>% arrange(ticker, RMSE)
+```
+
+## Visualize Forecasts vs Actuals per Stock
+```{r forecast-visualization}
+plot_forecast <- function(tk){
+  x <- as.numeric(close_xts_aligned[, tk])
+  spl <- make_train_test(x, h = h)
+  train <- spl$train
+  test  <- spl$test
+  
+  fc_naive <- naive(train, h = h)
+  fit_arima <- auto.arima(train)
+  fc_arima <- forecast(fit_arima, h = h)
+  
+  # Plot ARIMA by default; overlay actual test
+  autoplot(fc_arima) +
+    autolayer(ts(test, start = length(train) + 1), 
+              series = "Actual (Test)") +
+    labs(title = paste("ARIMA Forecast vs Actual:", tk), 
+         x = "Time Index", y = "Close") 
+}
+
+walk(tickers, ~ print(plot_forecast(.x)))
+```
 
 
 \newpage
 # **Evaluation**
+## Accuracy Leaderboard (Model Comparison)
+Forecast Accuracy by Stock and Model (Lower RMSE/MAE/MAPE is Better)
+```{r accuracy-leaderboard}
+results %>%
+  group_by(ticker) %>%
+  arrange(RMSE, .by_group = TRUE) %>%
+  mutate(rank = row_number()) %>%
+  ungroup() %>%
+  arrange(ticker, rank) %>%
+  knitr::kable(digits = 3, 
+               caption = "Forecast Accuracy by Stock and Model")
+```
 
+## Best Model per Stock
+```{r best-models}
+best_by_stock <- results %>%
+  group_by(ticker) %>%
+  slice_min(RMSE, n = 1, with_ties = FALSE) %>%
+  ungroup()
 
+best_by_stock %>% knitr::kable(digits = 3, 
+                               caption = "Best Model Per Stock (by RMSE)")
+```
+
+## Residual Diagnostics for Best Models
+We check residuals to see if assumptions look reasonable (ACF, histogram, Ljung-Box)
+```{r residual-diagnostics}
+check_best_residuals <- function(tk){
+  x <- as.numeric(close_xts_aligned[, tk])
+  spl <- make_train_test(x, h = h)
+  train <- spl$train
+  
+  fit_arima <- auto.arima(train)
+  fc_arima <- forecast(fit_arima, h = h)
+  
+  cat("\n\n### Residual checks for", tk, "\n")
+  print(fit_arima)
+  checkresiduals(fc_arima)
+}
+
+walk(best_by_stock$ticker, check_best_residuals)
+```
+
+## Comparative Interpretation
+Comparative Forecastability (Lower RMSE = More Predictable)
+```{r comparative-interpretation}
+# Stock that is easiest/hardest to forecast (based on best RMSE)
+forecastability_tbl <- best_by_stock %>%
+  arrange(RMSE) %>%
+  mutate(forecastability_rank = row_number())
+
+forecastability_tbl %>%
+  knitr::kable(digits = 3, 
+               caption = "Comparative Forecastability of Stocks")
+```
 
 
 \newpage
 # **Deployment**
+## Reproducible Forecast Function
+A simple deployment-ready function that can be reused in a script, Shiny app, or scheduled job.
+```{r deploy-function}
+forecast_stock <- function(ticker, from = start_date, to = end_date, h = 20){
+  x <- getSymbols(ticker, src = "yahoo", from = from, to = to, auto.assign = FALSE)
+  close <- as.numeric(Cl(x))
+  
+  fit <- auto.arima(close)
+  fc  <- forecast(fit, h = h)
+  
+  list(
+    ticker = ticker,
+    model  = fit,
+    forecast = fc
+  )
+}
 
-
+# Example:
+demo <- forecast_stock("AAPL", from = start_date, to = end_date, h = 20)
+autoplot(demo$forecast) + labs(title = "Deployment Demo: AAPL 20-Day Forecast")
+```
 
 
 \newpage
 # **Conclusion**
+## Key Findings
+* Trend & growth differed meaningfully across AAPL/MSFT/TSLA/AMZN.
+* Volatility (rolling SD of returns) highlighted different risk regimes—typically TSLA exhibits higher volatility.
+* Naive baseline is a strong benchmark; any model must beat it to justify complexity. 
+* ARIMA often improves on naive for some tickers, but not always—evaluation determines the winner.
 
-
+## Next Improvement
+* Explore additional models (e.g., ETS, Prophet, machine learning).
+* Incorporate exogenous variables (e.g., market indices, macroeconomic indicators).
+* Extend forecast horizon and evaluate longer-term predictability.
+* Automate regular updates and forecasts via scheduled scripts or dashboards.
 
 
 \newpage
 # **References**
-
+* Hyndman, R. J., & Athanasopoulos, G. (2018). *Forecasting: principles and practice*. OTexts.
+* Yahoo Finance. (n.d.). Retrieved from https://finance.yahoo.com/
+* R Documentation for `quantmod`, `forecast`, and `tseries` packages.
 
 
 \newpage
-# **Appendix**
-
-
+\thispagestyle{plain}
+\vspace*{\fill}
+\begin{center}
+\textbf{\Huge Thank You!}
+\end{center}
+\vspace*{\fill}
