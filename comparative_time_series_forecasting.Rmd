@@ -107,6 +107,8 @@ start_date <- as.Date("2016-01-01")
 end_date <- as.Date("2026-01-20")
 ```
 
+Here we define the study universe (AAPL, MSFT, TSLA, AMZN) and the historical window (**2016-01-01 to 2026-01-20**). The study period is fixed from January 1, 2016 to January 20, 2026 to ensure consistent temporal coverage across all securities. Using a common observation window allows differences in trends, volatility, and forecast accuracy to be attributed to underlying stock behavior rather than discrepancies in data availability or sampling periods.
+
 ## Pull Historical Prices
 ```{r data-pulling}
 prices_list <- map(
@@ -126,6 +128,12 @@ map(prices_list, head)
 map(prices_list, tail)
 ```
 
+This chunk retrieves daily OHLCV data from Yahoo Finance into a named list of `xts` objects—one per ticker. Inspecting the `head()`/`tail()` snapshots is a quick sanity check that:
+
+1. dates are ordered correctly
+2. Fields exist as expected (Open/High/Low/Close/Volume/Adjusted)
+3. Price scales differ substantially across tickers—reinforcing why later we use **indexing (start=100)** and **returns** for apples-to-apples comparison.
+
 ## Extract Adjusted Close Prices
 ```{r adjusted-close}
 close_list <- map(prices_list, ~ Cl(.x))
@@ -139,12 +147,16 @@ head(close_xts)
 tail(close_xts)
 ```
 
+Adjusted closing prices are extracted for each ticker and merged into a single aligned `xts` object. This structure enables consistent downstream computation of returns, rolling statistics, and forecasting models. The merged dataset confirms that all series share the same trading calendar and exhibit strong upward trends over the analysis horizon, indicating non-stationarity in price levels.
+
 ## Missing Dates / Alignment
 Markets close on weekends/holidays; we keep the market calendar as-is.
 ```{r missing-dates}
 close_xts_aligned <- na.omit(close_xts)
 dim(close_xts); dim(close_xts_aligned)
 ```
+
+Financial markets operate on an irregular calendar due to weekends and holidays. After merging all series, `na.omit()` is applied to retain only dates where all tickers are simultaneously observed. Since the dimensionality remains unchanged, the merged dataset contains a complete intersection of trading days with no missing values across assets.
 
 
 \newpage
@@ -159,6 +171,8 @@ close_df <- close_xts_aligned %>%
 
 glimpse(close_df)
 ```
+
+The wide `xts` object is reshaped into a long, tidy format with one observation per date and ticker. This structure facilitates grouped transformations, visualization, and comparative analysis using `ggplot2` and `tidyverse` workflows. The resulting dataset contains **10,100** observations corresponding to **2,525** trading days across four securities.
 
 ## Create Returns (Risk/Volatility Lens)
 Returns analysis is essential for risk assessment.
@@ -175,6 +189,8 @@ returns_df <- returns_xts %>%
 summary(returns_df$log_return)
 ```
 
+Daily log returns are computed to transform non-stationary price series into a scale-free representation suitable for volatility and risk analysis. The empirical return distribution exhibits heavy tails, with occasional extreme positive and negative values. Such behavior is consistent with financial time series and motivates the use of rolling volatility measures and robust forecasting benchmarks.
+
 
 \newpage
 # **Exploratory Data Analysis (EDA)**
@@ -188,6 +204,8 @@ close_df %>%
     x = "Date", y = "Close Price (USD)"
   )
 ```
+
+The time series of closing prices illustrates long-term growth patterns and major structural shifts across all securities. Absolute price levels differ substantially between tickers, limiting direct comparability. This visualization primarily supports individual trend inspection rather than relative performance analysis.
 
 ## Normalize Prices (Indexed to 100)
 ```{r normalized-prices}
@@ -206,12 +224,16 @@ close_indexed %>%
   )
 ```
 
+Price series are indexed to a common baseline value of **100** at the first observation for each ticker. This transformation standardizes scale and enables direct comparison of relative growth trajectories. The indexed series highlight substantial divergence in cumulative performance across stocks over the study period.
+
 ## Return & Drawdown Summary
 ```{r returns-drawdown}
 charts.PerformanceSummary(
   returns_xts,
   main = "Performance Summary: Daily Log Returns (All Stocks)")
 ```
+
+The performance summary visualizes cumulative returns, daily return distributions, and drawdowns in a unified framework. This representation captures both long-term compounding behavior and short-term risk characteristics. Differences in drawdown depth and return variability reflect heterogeneity in volatility regimes across securities.
 
 ## Volatility Comparison (Rolling Std. Dev.)
 ```{r volatility-comparison}
@@ -242,9 +264,10 @@ roll_vol_df %>%
   )
 ```
 
+Rolling 20-day standard deviations of log returns are computed as a proxy for monthly realized volatility. The resulting series display volatility clustering, a common characteristic of equity markets. Higher and more frequent volatility spikes indicate increased uncertainty and reduced short-horizon predictability for certain securities.
+
 ## Decomposition (Monthly Aggregation)
-Classic decomposition is easiest on regular seasonal frequency.
-We convert daily close to monthly close and decompose per stock.
+Classic decomposition is easiest on regular seasonal frequency. Converted daily close to monthly close and decompose per stock.
 
 ```{r decomposition}
 monthly_close_list <- map(close_list, ~ Cl(to.monthly(.x)) )
@@ -267,16 +290,18 @@ decomp_plots <- function(x_xts, ticker_name){
 decomps <- imap(monthly_close_list, ~ decomp_plots(.x, .y))
 ```
 
+Daily closing prices are aggregated to monthly frequency to facilitate classical additive decomposition. Across all securities, the trend component dominates the series, while seasonal effects are comparatively weak and unstable. The remainder component captures irregular fluctuations associated with firm-specific and macroeconomic events. These results suggest that forecasting models should prioritize trend handling rather than fixed seasonal structure.
+
 
 \newpage
 # **Modeling**
 ## Forecasting Design
-We’ll forecast short-term movement using:
+The focus of forecasting design is short-term movement using:
 
 * Naive baseline (last value persists) - strong baseline in finance.
 * ARIMA (auto.arima) - standard statistical model for time series. 
 
-We’ll do a rolling-origin evaluation (time-series CV) AND a simple holdout for interpretability.
+I’ll do a rolling-origin evaluation (time-series CV) AND a simple holdout for interpretability.
 
 ## Helper Functions
 ```{r helper-functions}
@@ -298,6 +323,8 @@ mape <- function(actual, pred){
   mean(abs((actual - pred) / actual), na.rm = TRUE) * 100
 }
 ```
+
+Short-term forecasting is conducted using two benchmark approaches: a naive persistence model and an automatically selected ARIMA model. Model performance is evaluated using a fixed holdout horizon and time-series-appropriate error metrics. This design ensures consistent and comparable evaluation across all securities.
 
 ## Build Models per Stock
 ```{r modeling}
@@ -330,6 +357,8 @@ results <- map_dfr(tickers, function(tk){
 results %>% arrange(ticker, RMSE)
 ```
 
+Forecast accuracy varies by security and model. For some assets, ARIMA models achieve lower error metrics relative to the naive baseline, indicating the presence of short-term structure beyond random walk behavior. For others, the naive model performs comparably or better, suggesting limited exploitable structure in the evaluation window.
+
 ## Visualize Forecasts vs Actuals per Stock
 ```{r forecast-visualization}
 plot_forecast <- function(tk){
@@ -353,6 +382,8 @@ plot_forecast <- function(tk){
 walk(tickers, ~ print(plot_forecast(.x)))
 ```
 
+Forecast-versus-actual plots provide a visual assessment of model performance over the holdout period. Deviations between predicted and observed values highlight challenges associated with abrupt price movements and regime shifts. These plots complement numerical accuracy metrics by illustrating dynamic tracking behavior.
+
 
 \newpage
 # **Evaluation**
@@ -369,6 +400,8 @@ results %>%
                caption = "Forecast Accuracy by Stock and Model")
 ```
 
+This chunk ranks models within each ticker by RMSE and presents a concise leaderboard. Interpreting it: (1) **model selection is ticker-specific** (no single winner across all stocks), and (2) the naive baseline remains a high bar—any alternative model must consistently beat it to justify deployment. This table is also portfolio-friendly because it demonstrates principled evaluation rather than “model shopping.”
+
 ## Best Model per Stock
 ```{r best-models}
 best_by_stock <- results %>%
@@ -379,6 +412,8 @@ best_by_stock <- results %>%
 best_by_stock %>% knitr::kable(digits = 3, 
                                caption = "Best Model Per Stock (by RMSE)")
 ```
+
+Selecting the best model per stock (by RMSE) yields: **AAPL → ARIMA**, **AMZN → ARIMA**, **MSFT → Naive**, **TSLA → Naive**. This is an important conclusion for stakeholders: for some assets, simplicity wins. It also supports the project’s comparative goal—identifying which stocks are more forecastable under the same design.
 
 ## Residual Diagnostics for Best Models
 We check residuals to see if assumptions look reasonable (ACF, histogram, Ljung-Box)
@@ -399,6 +434,8 @@ check_best_residuals <- function(tk){
 walk(best_by_stock$ticker, check_best_residuals)
 ```
 
+Residual diagnostics evaluate whether systematic structure remains unexplained by the selected models. Autocorrelation patterns and Ljung–Box test results indicate that residuals for some securities deviate from white noise assumptions. This suggests potential benefits from alternative model classes or extensions incorporating additional dynamics.
+
 ## Comparative Interpretation
 Comparative Forecastability (Lower RMSE = More Predictable)
 ```{r comparative-interpretation}
@@ -411,6 +448,8 @@ forecastability_tbl %>%
   knitr::kable(digits = 3, 
                caption = "Comparative Forecastability of Stocks")
 ```
+
+Securities are ranked by minimum out-of-sample RMSE as a proxy for forecastability. Lower error values indicate more stable short-horizon dynamics under the evaluated modeling framework. The resulting ranking highlights heterogeneity in predictability across technology stocks.
 
 
 \newpage
@@ -437,20 +476,16 @@ demo <- forecast_stock("AAPL", from = start_date, to = end_date, h = 20)
 autoplot(demo$forecast) + labs(title = "Deployment Demo: AAPL 20-Day Forecast")
 ```
 
+The forecasting workflow is encapsulated in a reusable function that retrieves recent market data, fits an ARIMA model, and generates short-term forecasts. This modular structure supports integration into dashboards, scheduled pipelines, or interactive applications, subject to appropriate production safeguards.
+
 
 \newpage
 # **Conclusion**
 ## Key Findings
-* Trend & growth differed meaningfully across AAPL/MSFT/TSLA/AMZN.
-* Volatility (rolling SD of returns) highlighted different risk regimes—typically TSLA exhibits higher volatility.
-* Naive baseline is a strong benchmark; any model must beat it to justify complexity. 
-* ARIMA often improves on naive for some tickers, but not always—evaluation determines the winner.
+The analysis demonstrates meaningful differences in trend behavior, volatility regimes, and forecast accuracy across major technology stocks. Model effectiveness is asset-specific, and simple baselines remain competitive in several cases.
 
 ## Next Improvement
-* Explore additional models (e.g., ETS, Prophet, machine learning).
-* Incorporate exogenous variables (e.g., market indices, macroeconomic indicators).
-* Extend forecast horizon and evaluate longer-term predictability.
-* Automate regular updates and forecasts via scheduled scripts or dashboards.
+Future work may incorporate alternative model families, exogenous predictors, extended forecast horizons, and automated deployment pipelines to enhance predictive performance and operational usability.
 
 
 \newpage
@@ -458,6 +493,13 @@ autoplot(demo$forecast) + labs(title = "Deployment Demo: AAPL 20-Day Forecast")
 * Hyndman, R. J., & Athanasopoulos, G. (2018). *Forecasting: principles and practice*. OTexts.
 * Yahoo Finance. (n.d.). Retrieved from https://finance.yahoo.com/
 * R Documentation for `quantmod`, `forecast`, and `tseries` packages.
+* Wickham, H., et al. (2019). *Welcome to the tidyverse*. Journal of Open Source Software, 4(43), 1686.
+* Brockwell, P. J., & Davis, R. A. (2016). *Introduction to time series and forecasting*. Springer.
+* Chatfield, C. (2003). *The analysis of time series: an introduction*. CRC press.
+* Box, G. E., Jenkins, G. M., Reinsel, G. C., & Ljung, G. M. (2015). *Time series analysis: forecasting and control*. John Wiley & Sons.
+* Tsay, R. S. (2010). *Analysis of financial time series*. John Wiley & Sons.
+* Shumway, R. H., & Stoffer, D. S. (2017). *Time series analysis and its applications: with R examples*. Springer.
+* ChatGPT (2024). *Assistance with R programming and time series analysis*.
 
 
 \newpage
