@@ -130,7 +130,7 @@ map(prices_list, tail)
 
 This chunk retrieves daily OHLCV data from Yahoo Finance into a named list of `xts` objects—one per ticker. Inspecting the `head()`/`tail()` snapshots is a quick sanity check that:
 
-1. dates are ordered correctly
+1. Dates are ordered correctly
 2. Fields exist as expected (Open/High/Low/Close/Volume/Adjusted)
 3. Price scales differ substantially across tickers—reinforcing why later we use **indexing (start=100)** and **returns** for apples-to-apples comparison.
 

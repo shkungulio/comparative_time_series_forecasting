@@ -1,0 +1,198 @@
+---
+title: "Comparative Time Series Forecasting"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+    theme: cosmo
+    navbar:
+      - {title: "Overview", href: "#overview"}
+      - {title: "EDA", href: "#eda"}
+      - {title: "Forecasting", href: "#forecasting"}
+      - {title: "Evaluation", href: "#evaluation"}
+      - {title: "Deployment Demo", href: "#deployment-demo"}
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+# Core
+library(tidyverse)
+library(lubridate)
+
+# Finance / time series
+library(quantmod)
+library(xts)
+library(zoo)
+library(PerformanceAnalytics)
+
+# Forecasting
+library(forecast)
+
+# Interactive
+library(plotly)
+library(DT)
+library(shiny)
+```
+
+Overview {#overview}
+-----------------------------------------------------------------------
+# Sidebar {.sidebar}
+```{r}
+checkboxGroupInput(
+  "tickers",
+  "Select tickers",
+  choices = c("AAPL", "MSFT", "TSLA", "AMZN"),
+  selected = c("AAPL", "MSFT", "TSLA", "AMZN"),
+  inline = FALSE
+)
+```
+
+```{r}
+dateRangeInput(
+  "daterange",
+  "Date range",
+  start = as.Date("2016-01-01"),
+  end   = as.Date("2026-01-20"),
+  min   = as.Date("2010-01-01"),
+  max   = Sys.Date()
+)
+```
+sliderInput("roll_n", "Rolling volatility window (trading days)",
+            min = 5, max = 120, value = 20, step = 5)
+
+sliderInput("h", "Forecast horizon (trading days)",
+            min = 10, max = 120, value = 60, step = 5)
+
+selectInput("model_choice", "Forecast model (per-ticker view)",
+            choices = c("ARIMA", "Naive"),
+            selected = "ARIMA")
+
+actionButton("refresh", "Refresh / Recompute", class = "btn-primary")
+hr()
+
+helpText("Tip: Start with all tickers, then narrow to compare behaviors.")
+```
+
+```{r}
+# --- helper metrics ---
+rmse <- function(actual, pred) sqrt(mean((actual - pred)^2, na.rm = TRUE))
+mae  <- function(actual, pred) mean(abs(actual - pred), na.rm = TRUE)
+mape <- function(actual, pred) mean(abs((actual - pred) / actual), na.rm = TRUE) * 100
+
+make_train_test <- function(x, h = 60){
+  n <- length(x)
+  list(train = x[1:(n-h)], test = x[(n-h+1):n], h = h)
+}
+```
+
+```{r}
+# Pull + compute reactively on demand (so dashboard stays snappy)
+data_bundle <- eventReactive(input$refresh, {
+
+  req(input$tickers)
+  req(input$daterange)
+
+  tickers <- input$tickers
+  start_date <- input$daterange[1]
+  end_date   <- input$daterange[2]
+
+  # Pull OHLCV from Yahoo
+  prices_list <- purrr::map(
+    tickers,
+    ~ getSymbols(.x, src = "yahoo", from = start_date, to = end_date, auto.assign = FALSE)
+  )
+  names(prices_list) <- tickers
+
+  # Adjusted close merged and aligned
+  close_list <- purrr::map(prices_list, ~ Cl(.x))
+  close_xts  <- do.call(merge, close_list)
+  colnames(close_xts) <- tickers
+  close_xts_aligned <- na.omit(close_xts)
+
+  # Tidy close
+  close_df <- close_xts_aligned %>%
+    fortify.zoo() %>%
+    as_tibble() %>%
+    rename(date = Index) %>%
+    pivot_longer(-date, names_to = "ticker", values_to = "close")
+
+  # Indexed (start=100)
+  close_indexed <- close_df %>%
+    group_by(ticker) %>%
+    arrange(date) %>%
+    mutate(index_100 = 100 * close / first(close)) %>%
+    ungroup()
+
+  # Returns (log)
+  returns_xts <- na.omit(Return.calculate(close_xts_aligned, method = "log"))
+  colnames(returns_xts) <- tickers
+
+  returns_df <- returns_xts %>%
+    fortify.zoo() %>%
+    as_tibble() %>%
+    rename(date = Index) %>%
+    pivot_longer(-date, names_to = "ticker", values_to = "log_return")
+
+  # Rolling volatility
+  roll_n <- input$roll_n
+  roll_vol <- rollapply(
+    returns_xts,
+    width = roll_n,
+    FUN = sd,
+    by.column = TRUE,
+    align = "right",
+    fill = NA
+  ) %>% na.omit()
+
+  roll_vol_df <- roll_vol %>%
+    fortify.zoo() %>%
+    as_tibble() %>%
+    rename(date = Index) %>%
+    pivot_longer(-date, names_to = "ticker", values_to = "roll_sd")
+
+  list(
+    tickers = tickers,
+    start_date = start_date,
+    end_date = end_date,
+    prices_list = prices_list,
+    close_xts = close_xts_aligned,
+    close_df = close_df,
+    close_indexed = close_indexed,
+    returns_xts = returns_xts,
+    returns_df = returns_df,
+    roll_vol_df = roll_vol_df
+  )
+}, ignoreInit = FALSE)
+```
+
+
+
+Row
+-----------------------------------------------------------------------
+
+### Project Summary
+
+```{r}
+renderUI({
+  b <- data_bundle()
+  tags$div(
+    tags$h4("Interactive Comparative Time Series Forecasting"),
+    tags$p("Universe: ", paste(b$tickers, collapse = ", ")),
+    tags$p("Window: ", as.character(b$start_date), " to ", as.character(b$end_date)),
+    tags$ul(
+      tags$li("EDA: price trends, indexed performance, returns & rolling volatility"),
+      tags$li("Modeling: Naive vs ARIMA short-horizon forecasts"),
+      tags$li("Evaluation: RMSE/MAE/MAPE leaderboard & best-per-stock summary")
+    )
+  )
+})
+```
+
+### Chart C
+
+```{r}
+
+```
+
