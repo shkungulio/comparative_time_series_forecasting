@@ -1,0 +1,573 @@
+---
+title: "Comparative Time Series Forecasting of Major Technology Stocks"
+output:
+  flexdashboard::flex_dashboard:
+    navbar:
+    - href: "https://www.linkedin.com/in/seif-kungulio/"
+      icon: "fa-linkedin"
+    - href: https://github.com/shkungulio
+      icon: "fa-github"
+    orientation: rows
+    vertical_layout: fill
+    theme: cosmo
+    source_code: embed
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      fig.width = 10, fig.height = 6)
+
+# Set default CRAN mirror
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+#Install the following libraries if required
+# List of required packages
+required_pkgs <- c("flexdashboard", "tidyverse", "scales", "forecast", "shiny",
+                   "quantmod", "xts", "zoo", "PerformanceAnalytics", "patchwork") 
+
+# Install and load each package
+for (pkg in required_pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+  library(pkg, character.only = TRUE)
+}
+```
+
+```{r helpers}
+# --- utility metrics ---
+rmse <- function(actual, pred) sqrt(mean((actual - pred)^2, na.rm = TRUE))
+mae  <- function(actual, pred) mean(abs(actual - pred), na.rm = TRUE)
+mape <- function(actual, pred) mean(abs((actual - pred) / actual), na.rm = TRUE) * 100
+
+make_train_test <- function(x, h = 60){
+  n <- length(x)
+  stopifnot(h < n)
+  list(train = x[1:(n-h)], test = x[(n-h+1):n], h = h)
+}
+
+# Best model per stock from the report (by RMSE):
+# AAPL -> ARIMA, AMZN -> ARIMA, MSFT -> Naive, TSLA -> Naive
+best_model_map <- tibble::tibble(
+  ticker = c("AAPL","AMZN","MSFT","TSLA"),
+  best_model = c("ARIMA","ARIMA","Naive","Naive")
+)
+
+fit_and_forecast <- function(x_train, h, model){
+  model <- match.arg(model, c("Naive","ARIMA"))
+  if(model == "Naive"){
+    fc <- naive(x_train, h = h)
+    list(model = "Naive", fit = NULL, forecast = fc, pred = as.numeric(fc$mean))
+  } else {
+    fit <- auto.arima(x_train)
+    fc  <- forecast(fit, h = h)
+    list(model = "ARIMA", fit = fit, forecast = fc, pred = as.numeric(fc$mean))
+  }
+}
+
+as_close_xts <- function(symbol, from, to){
+  x <- getSymbols(symbol, src = "yahoo", from = from, to = to, auto.assign = FALSE)
+  Cl(x)
+}
+
+as_log_returns <- function(close_xts){
+  na.omit(Return.calculate(close_xts, method = "log"))
+}
+
+roll_volatility <- function(returns_xts, window = 20){
+  na.omit(rollapply(returns_xts, width = window, FUN = sd, align = "right", fill = NA))
+}
+
+to_df_long <- function(x_xts, value_name){
+  x_xts %>%
+    fortify.zoo() %>%
+    as_tibble() %>%
+    rename(date = Index) %>%
+    pivot_longer(-date, names_to = "ticker", values_to = value_name)
+}
+
+performance_summary_gg <- function(ret_xts, ticker_name = "Asset",
+                                   roll_window = 20) {
+  stopifnot(xts::is.xts(ret_xts))
+
+  # Ensure vector-like xts
+  ret_xts <- ret_xts[, 1, drop = FALSE]
+  colnames(ret_xts) <- "ret"
+
+  # Build time series components
+  eq_xts <- cumprod(1 + ret_xts) - 1
+  dd_xts <- PerformanceAnalytics::Drawdowns(ret_xts)
+  vol_xts <- zoo::rollapply(ret_xts, width = roll_window,
+                            FUN = function(x) sd(x, na.rm = TRUE) * sqrt(252),
+                            by.column = TRUE, align = "right", fill = NA)
+
+  # Convert to tibble for ggplot
+  df <- tibble::tibble(
+    date = as.Date(zoo::index(ret_xts)),
+    ret  = as.numeric(ret_xts$ret),
+    equity = as.numeric(eq_xts$ret),
+    drawdown = as.numeric(dd_xts$ret),
+    roll_vol = as.numeric(vol_xts$ret)
+  ) %>%
+    tidyr::drop_na(date)
+
+  # Key summary stats (simple + readable)
+  ann_return <- (prod(1 + df$ret, na.rm = TRUE)^(252 / sum(!is.na(df$ret)))) - 1
+  ann_vol    <- sd(df$ret, na.rm = TRUE) * sqrt(252)
+  sharpe     <- ifelse(is.finite(ann_vol) && ann_vol > 0, ann_return / ann_vol, NA_real_)
+  max_dd     <- min(df$drawdown, na.rm = TRUE)
+
+  stats_df <- tibble::tibble(
+    metric = c("Annualized Return", "Annualized Volatility", "Sharpe (Rf=0)", "Max Drawdown"),
+    value  = c(ann_return, ann_vol, sharpe, max_dd)
+  ) %>%
+    mutate(label = scales::percent(value, accuracy = 0.01),
+           label = ifelse(metric == "Sharpe (Rf=0)",
+                          format(round(value, 2), nsmall = 2),
+                          label))
+
+  p_equity <- ggplot(df, aes(x = date, y = equity)) +
+    geom_line(linewidth = 0.7) +
+    labs(
+      title = paste0("Equity Curve (Cumulative Return): ", ticker_name),
+      x = NULL, y = "Cumulative Return"
+    ) +
+    scale_y_continuous(labels = scales::percent) +
+    theme_minimal()
+
+  p_dd <- ggplot(df, aes(x = date, y = drawdown)) +
+    geom_area(alpha = 0.6) +
+    labs(
+      title = "Drawdown",
+      x = NULL, y = "Drawdown"
+    ) +
+    scale_y_continuous(labels = scales::percent) +
+    theme_minimal()
+
+  p_vol <- ggplot(df, aes(x = date, y = roll_vol)) +
+    geom_line(linewidth = 0.7) +
+    labs(
+      title = paste0("Rolling Volatility (", roll_window, "-day, Annualized)"),
+      x = NULL, y = "Volatility"
+    ) +
+    scale_y_continuous(labels = scales::percent) +
+    theme_minimal()
+
+  p_stats <- ggplot(stats_df, aes(x = reorder(metric, value), y = value)) +
+    geom_col() +
+    coord_flip() +
+    geom_text(aes(label = label), hjust = -0.05, size = 3.5) +
+    labs(
+      title = "Key Metrics",
+      x = NULL, y = NULL
+    ) +
+    theme_minimal() +
+    theme(panel.grid.minor = element_blank())
+
+  # Combine
+  (p_equity / p_dd) | (p_vol / p_stats)
+}
+```
+
+Inputs {.sidebar}
+--------------------------------------------------------------------------------
+
+```{r}
+selectInput(
+  "ticker",
+  "Select ticker",
+  choices = c("AAPL","MSFT","TSLA","AMZN"),
+  selected = "AAPL"
+)
+
+dateRangeInput(
+  "daterange",
+  "Date range (Yahoo Finance)",
+  start = as.Date("2016-01-01"),
+  end   = as.Date("2026-01-31"),
+  min   = as.Date("2010-01-01"),
+  max   = as.Date("2026-01-31")
+)
+
+sliderInput(
+  "h",
+  "Forecast horizon (trading days)",
+  min = 0, max = 120, value = 30, step = 20
+)
+
+radioButtons(
+  "model_mode",
+  "Model selection",
+  choices = c("Best model (from analysis)" = "best",
+              "Force ARIMA" = "arima",
+              "Force Naive" = "naive"),
+  selected = "best"
+)
+
+sliderInput(
+  "roll_n",
+  "Rolling volatility window (days)",
+  min = 5, max = 60, value = 20, step = 5
+)
+```
+
+&nbsp;
+&nbsp;
+
+---
+
+
+  © 2026 Crisp-DM Insights  
+
+
+Row
+--------------------------------------------------------------------------------
+
+### Key takeaway
+
+```{r}
+renderValueBox({
+  tk <- input$ticker
+  best <- best_model_map$best_model[best_model_map$ticker == tk]
+  valueBox(
+    value = paste("Best model:", best),
+    caption = paste(tk, "best-performing model (by RMSE) from the project report"),
+    icon = "line-chart",
+    color = "primary"
+  )
+})
+```
+
+### Live data status
+
+```{r}
+renderValueBox({
+  rng <- input$daterange
+  tk <- input$ticker
+
+  # Minimal try-catch so the dashboard doesn't crash on occasional Yahoo hiccups
+  close <- tryCatch(as_close_xts(tk, rng[1], rng[2]), error = function(e) NULL)
+
+  if(is.null(close) || NROW(close) == 0){
+    valueBox("No data", 
+             caption = "Yahoo Finance returned no rows (try a wider range)", 
+             icon = "warning-sign", 
+             color = "danger")
+  } else {
+    valueBox(
+      value = paste(format(start(close), "%Y-%m-%d"), " → ", 
+                     format(end(close), "%Y-%m-%d")),
+      caption = paste("Trading days:", NROW(close)),
+      icon = "calendar",
+      color = "info"
+    )
+  }
+})
+```
+
+Row {.tabset .tabset-fade}
+--------------------------------------------------------------------------------
+
+### **Overview**
+
+#### Prices (Indexed to 100)
+
+```{r}
+renderPlot({
+  rng <- input$daterange
+  tk  <- input$ticker
+
+  close <- as_close_xts(tk, rng[1], rng[2])
+  req(!is.null(close), NROW(close) > 5)
+
+  close_df <- tibble::tibble(
+    date  = as.Date(zoo::index(close)),
+    close = as.numeric(close)
+  ) %>%
+    dplyr::mutate(index_100 = 100 * close / dplyr::first(close))
+
+  ggplot2::ggplot(close_df, ggplot2::aes(date, index_100)) +
+    ggplot2::geom_line() +
+    ggplot2::labs(
+      title = paste(tk, "Indexed Close (Start = 100)"),
+      x = NULL, y = "Index"
+    )
+}, height = 200, width = "auto")
+```
+> This chart compares relative price performance by rebasing the selected stock to 100 at the start of the period, making it easy to see growth trends and drawdowns independent of absolute price levels.
+
+#### Performance summary
+
+```{r}
+renderPlot({
+  rng <- input$daterange
+  tk  <- input$ticker
+
+  pr <- as_close_xts(tk, rng[1], rng[2])
+  req(!is.null(pr), NROW(pr) > 30)
+
+  ret <- PerformanceAnalytics::Return.calculate(pr, method = "log")
+  ret <- ret[!is.na(ret)]
+  req(NROW(ret) > 30)
+
+  performance_summary_gg(ret, ticker_name = tk, roll_window = 20)
+}, height = 500, width = "auto")
+```
+> This panel summarizes return behavior, risk, and drawdowns over time, combining cumulative performance, volatility dynamics, and downside risk into a single, investor-oriented view.
+
+### **Forecast**
+
+#### Forecast vs actual (holdout)
+
+```{r}
+renderPlot({
+  rng <- input$daterange
+  tk <- input$ticker
+  h  <- input$h
+
+  close <- as_close_xts(tk, rng[1], rng[2])
+  x <- as.numeric(close)
+
+  # Choose model
+  best <- best_model_map$best_model[best_model_map$ticker == tk]
+  model <- dplyr::case_when(
+    input$model_mode == "best" ~ best,
+    input$model_mode == "arima" ~ "ARIMA",
+    input$model_mode == "naive" ~ "Naive"
+  )
+
+  spl <- make_train_test(x, h = h)
+  res <- fit_and_forecast(spl$train, h, model)
+
+  # Plot forecast + actual
+  if(res$model == "ARIMA"){
+    p <- autoplot(res$forecast) +
+      autolayer(ts(spl$test, start = length(spl$train)+1), series = "Actual (Test)") +
+      labs(
+        title = paste0(tk, " — ", res$model, " forecast vs actual (", h, " days holdout)"),
+        x = "Time index", y = "Close"
+      )
+  } else {
+    p <- autoplot(res$forecast) +
+      autolayer(ts(spl$test, start = length(spl$train)+1), series = "Actual (Test)") +
+      labs(
+        title = paste0(tk, " — ", res$model, " forecast vs actual (", h, " days holdout)"),
+        x = "Time index", y = "Close"
+      )
+  }
+
+  p
+}, height = 280, width = "auto")
+```
+> This plot evaluates out-of-sample forecast performance by comparing model predictions against actual observed prices over the holdout window, highlighting short-term predictive accuracy.
+
+#### Accuracy (holdout)
+
+```{r}
+renderTable({
+  rng <- input$daterange
+  tk <- input$ticker
+  h  <- input$h
+
+  close <- as_close_xts(tk, rng[1], rng[2])
+  x <- as.numeric(close)
+
+  best <- best_model_map$best_model[best_model_map$ticker == tk]
+  model <- dplyr::case_when(
+    input$model_mode == "best" ~ best,
+    input$model_mode == "arima" ~ "ARIMA",
+    input$model_mode == "naive" ~ "Naive"
+  )
+
+  spl <- make_train_test(x, h = h)
+  res <- fit_and_forecast(spl$train, h, model)
+
+  tibble(
+    ticker = tk,
+    model = res$model,
+    RMSE = rmse(spl$test, res$pred),
+    MAE  = mae(spl$test, res$pred),
+    MAPE = mape(spl$test, res$pred)
+  ) %>% mutate(across(c(RMSE,MAE,MAPE), ~ round(.x, 3)))
+}, striped = TRUE, hover = TRUE, spacing = "s")
+```
+> This table quantifies forecast accuracy using RMSE, MAE, and MAPE, allowing objective comparison of model performance for the selected stock and horizon.
+
+#### Next *h* days forecast (no actuals)
+
+```{r}
+renderPlot({
+  rng <- input$daterange
+  tk <- input$ticker
+  h  <- input$h
+
+  close <- as_close_xts(tk, rng[1], rng[2])
+  x <- as.numeric(close)
+
+  best <- best_model_map$best_model[best_model_map$ticker == tk]
+  model <- dplyr::case_when(
+    input$model_mode == "best" ~ best,
+    input$model_mode == "arima" ~ "ARIMA",
+    input$model_mode == "naive" ~ "Naive"
+  )
+
+  res <- fit_and_forecast(x, h, model)
+
+  autoplot(res$forecast) +
+    labs(
+      title = paste0(tk, " — ", res$model, " next ", h, " trading days forecast"),
+      x = "Time", y = "Close"
+    )
+}, height = 280, width = "auto")
+```
+> This forward-looking forecast shows expected price movements over the next h trading days, representing the model’s real-world predictive output without access to future observations.
+
+### **Model Comparison**
+
+#### Accuracy leaderboard (same date range + holdout)
+
+```{r}
+renderTable({
+  rng <- input$daterange
+  h  <- input$h
+
+  # Pull all tickers for fair comparison in the chosen window
+  tickers <- c("AAPL","MSFT","TSLA","AMZN")
+
+  close_list <- purrr::map(tickers, ~ as_close_xts(.x, rng[1], rng[2]))
+  names(close_list) <- tickers
+
+  # Keep only common trading days across tickers
+  close_xts <- do.call(merge, close_list)
+  colnames(close_xts) <- tickers
+  close_xts <- na.omit(close_xts)
+
+  res <- purrr::map_dfr(tickers, function(tk){
+    x <- as.numeric(close_xts[, tk])
+    spl <- make_train_test(x, h = h)
+
+    naive_res <- fit_and_forecast(spl$train, h, "Naive")
+    arima_res <- fit_and_forecast(spl$train, h, "ARIMA")
+
+    tibble(
+      ticker = tk,
+      model  = c("Naive","ARIMA"),
+      RMSE   = c(rmse(spl$test, naive_res$pred), rmse(spl$test, arima_res$pred)),
+      MAE    = c(mae(spl$test, naive_res$pred),  mae(spl$test, arima_res$pred)),
+      MAPE   = c(mape(spl$test, naive_res$pred), mape(spl$test, arima_res$pred))
+    )
+  }) %>%
+    group_by(ticker) %>%
+    arrange(RMSE, .by_group = TRUE) %>%
+    mutate(rank = row_number()) %>%
+    ungroup() %>%
+    arrange(ticker, rank) %>%
+    mutate(across(c(RMSE,MAE,MAPE), ~ round(.x, 3)))
+
+  res
+}, striped = TRUE, hover = TRUE, spacing = "s")
+```
+> This leaderboard compares Naive and ARIMA models across all stocks using a consistent time window and holdout period, enabling fair cross-asset and cross-model evaluation.
+
+#### Best model per ticker (computed on-the-fly)
+
+```{r}
+renderTable({
+  rng <- input$daterange
+  h  <- input$h
+  tickers <- c("AAPL","MSFT","TSLA","AMZN")
+
+  close_list <- purrr::map(tickers, ~ as_close_xts(.x, rng[1], rng[2]))
+  names(close_list) <- tickers
+  close_xts <- do.call(merge, close_list)
+  colnames(close_xts) <- tickers
+  close_xts <- na.omit(close_xts)
+
+  best_tbl <- purrr::map_dfr(tickers, function(tk){
+    x <- as.numeric(close_xts[, tk])
+    spl <- make_train_test(x, h = h)
+
+    naive_res <- fit_and_forecast(spl$train, h, "Naive")
+    arima_res <- fit_and_forecast(spl$train, h, "ARIMA")
+
+    tibble(
+      ticker = tk,
+      best_model = ifelse(
+        rmse(spl$test, arima_res$pred) <= rmse(spl$test, naive_res$pred),
+        "ARIMA","Naive"
+      ),
+      RMSE_best = min(rmse(spl$test, naive_res$pred), rmse(spl$test, arima_res$pred))
+    )
+  }) %>% mutate(RMSE_best = round(RMSE_best, 3)) %>% arrange(RMSE_best)
+
+  best_tbl
+}, striped = TRUE, hover = TRUE, spacing = "s")
+```
+> This table identifies the best-performing model for each stock based on minimum RMSE, highlighting differences in predictability across companies.
+
+### **Diagnostics**
+
+#### Residual checks (ARIMA only)
+
+```{r}
+renderPlot({
+  rng <- input$daterange
+  tk <- input$ticker
+  h  <- input$h
+
+  close <- as_close_xts(tk, rng[1], rng[2])
+  x <- as.numeric(close)
+
+  best <- best_model_map$best_model[best_model_map$ticker == tk]
+  model <- dplyr::case_when(
+    input$model_mode == "best" ~ best,
+    input$model_mode == "arima" ~ "ARIMA",
+    input$model_mode == "naive" ~ "Naive"
+  )
+
+  if(model != "ARIMA"){
+    plot.new()
+    text(0.5, 0.5, "Residual diagnostics are shown for ARIMA only.\nSwitch model selection to ARIMA to view.")
+    return(invisible(NULL))
+  }
+
+  spl <- make_train_test(x, h = h)
+  fit <- auto.arima(spl$train)
+  fc  <- forecast(fit, h = h)
+
+  # checkresiduals returns base R plots; render the last plot panel
+  checkresiduals(fc) 
+}, height = 480, width = "auto")
+```
+> Residual diagnostics assess whether ARIMA model assumptions are satisfied, checking for autocorrelation, normality, and constant variance in forecast errors.
+
+#### ARIMA model summary (when selected)
+
+```{r}
+renderPrint({
+  rng <- input$daterange
+  tk <- input$ticker
+  h  <- input$h
+
+  close <- as_close_xts(tk, rng[1], rng[2])
+  x <- as.numeric(close)
+
+  best <- best_model_map$best_model[best_model_map$ticker == tk]
+  model <- dplyr::case_when(
+    input$model_mode == "best" ~ best,
+    input$model_mode == "arima" ~ "ARIMA",
+    input$model_mode == "naive" ~ "Naive"
+  )
+
+  if(model != "ARIMA"){
+    cat("ARIMA model summary is available when ARIMA is selected.")
+    return(invisible(NULL))
+  }
+
+  spl <- make_train_test(x, h = h)
+  fit <- auto.arima(spl$train)
+  fit
+})
+```
+> This summary reports the fitted ARIMA structure and parameter estimates, providing transparency into model complexity, statistical significance, and underlying time-series dynamics.

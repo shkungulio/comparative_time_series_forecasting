@@ -5,7 +5,7 @@ title: |
 author: |
   \fontsize{24}{28}\selectfont Seif H. Kungulio
 date: |
-  \fontsize{18}{22}\selectfont January 22, 2026
+  \fontsize{18}{22}\selectfont February 2, 2026
   \ \vspace*{\fill}
 output: 
   pdf_document:
@@ -41,7 +41,7 @@ options(repos = c(CRAN = "https://cloud.r-project.org"))
 
 #Install the following libraries if required
 # List of required packages
-required_pkgs <- c("tidyverse", "lubridate", "forecast", "tseries", 
+required_pkgs <- c("tidyverse", "lubridate", "forecast", "glue", "knitr", 
                    "quantmod", "xts", "zoo", "PerformanceAnalytics") 
 
 # Install and load each package
@@ -104,10 +104,10 @@ Historical stock price data for Apple (AAPL), Microsoft (MSFT), Tesla (TSLA), an
 # Define stock tickers and date range
 tickers <- c("AAPL", "MSFT", "TSLA", "AMZN")
 start_date <- as.Date("2016-01-01")
-end_date <- as.Date("2026-01-20")
+end_date <- as.Date("2026-01-31")
 ```
 
-Here we define the study universe (AAPL, MSFT, TSLA, AMZN) and the historical window (**2016-01-01 to 2026-01-20**). The study period is fixed from January 1, 2016 to January 20, 2026 to ensure consistent temporal coverage across all securities. Using a common observation window allows differences in trends, volatility, and forecast accuracy to be attributed to underlying stock behavior rather than discrepancies in data availability or sampling periods.
+Here we define the study universe (AAPL, MSFT, TSLA, AMZN) and the historical window (**2016-01-01 to 2026-01-31**). The study period is fixed from January 1, 2016 to January 31, 2026 to ensure consistent temporal coverage across all securities. Using a common observation window allows differences in trends, volatility, and forecast accuracy to be attributed to underlying stock behavior rather than discrepancies in data availability or sampling periods.
 
 ## Pull Historical Prices
 ```{r data-pulling}
@@ -172,7 +172,7 @@ close_df <- close_xts_aligned %>%
 glimpse(close_df)
 ```
 
-The wide `xts` object is reshaped into a long, tidy format with one observation per date and ticker. This structure facilitates grouped transformations, visualization, and comparative analysis using `ggplot2` and `tidyverse` workflows. The resulting dataset contains **10,100** observations corresponding to **2,525** trading days across four securities.
+The wide `xts` object is reshaped into a long, tidy format with one observation per date and ticker. This structure facilitates grouped transformations, visualization, and comparative analysis using `ggplot2` and `tidyverse` workflows. Because `close_xts_aligned` contains **2,534** trading days and there are **4** tickers, the tidy dataset contains **10,136** rows (2,534 × 4).
 
 ## Create Returns (Risk/Volatility Lens)
 Returns analysis is essential for risk assessment.
@@ -357,7 +357,7 @@ results <- map_dfr(tickers, function(tk){
 results %>% arrange(ticker, RMSE)
 ```
 
-Forecast accuracy varies by security and model. For some assets, ARIMA models achieve lower error metrics relative to the naive baseline, indicating the presence of short-term structure beyond random walk behavior. For others, the naive model performs comparably or better, suggesting limited exploitable structure in the evaluation window.
+Forecast accuracy varies by security and model, but in this holdout window the **naive (random-walk/persistence)** baseline is extremely difficult to beat. In the reported results, ARIMA does **not** improve RMSE/MAE/MAPE for AAPL, AMZN, or MSFT, and TSLA is effectively a tie. This is common for short-horizon price-level forecasting, where prices often behave close to a random walk and incremental structure is limited.
 
 ## Visualize Forecasts vs Actuals per Stock
 ```{r forecast-visualization}
@@ -400,7 +400,7 @@ results %>%
                caption = "Forecast Accuracy by Stock and Model")
 ```
 
-This chunk ranks models within each ticker by RMSE and presents a concise leaderboard. Interpreting it: (1) **model selection is ticker-specific** (no single winner across all stocks), and (2) the naive baseline remains a high bar—any alternative model must consistently beat it to justify deployment. This table is also portfolio-friendly because it demonstrates principled evaluation rather than “model shopping.”
+This chunk ranks models within each ticker by RMSE and presents a concise leaderboard. In this run, the **naive** baseline ranks #1 for every ticker (with TSLA essentially tied), which reinforces an important finance lesson: any alternative model must **consistently** beat the random-walk baseline to justify extra complexity. The table is still portfolio-friendly because it demonstrates principled, time-ordered evaluation rather than selecting a model purely because it looks better in-sample.
 
 ## Best Model per Stock
 ```{r best-models}
@@ -413,10 +413,10 @@ best_by_stock %>% knitr::kable(digits = 3,
                                caption = "Best Model Per Stock (by RMSE)")
 ```
 
-Selecting the best model per stock (by RMSE) yields: **AAPL → ARIMA**, **AMZN → ARIMA**, **MSFT → Naive**, **TSLA → Naive**. This is an important conclusion for stakeholders: for some assets, simplicity wins. It also supports the project’s comparative goal—identifying which stocks are more forecastable under the same design.
+Selecting the best model per stock (by RMSE) yields **Naive** for **AAPL**, **AMZN**, **MSFT**, and **TSLA** (TSLA is effectively a tie, but `slice_min(..., with_ties = FALSE)` returns the first minimum, which is Naive here). For stakeholders, this is still a valuable outcome: under this design and horizon, **simplicity wins**, and it suggests that short-horizon **price levels** are hard to forecast beyond a random-walk benchmark.
 
-## Residual Diagnostics for Best Models
-We check residuals to see if assumptions look reasonable (ACF, histogram, Ljung-Box)
+## Residual Diagnostics for ARIMA Models
+Even when Naive is the winner, it is useful to check ARIMA residuals to see whether any systematic autocorrelation remains (ACF, histogram, Ljung–Box).
 ```{r residual-diagnostics}
 check_best_residuals <- function(tk){
   x <- as.numeric(close_xts_aligned[, tk])
