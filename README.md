@@ -32,7 +32,7 @@ Model performance was assessed using **RMSE, MAE, and MAPE**. Results demonstrat
 These findings reinforce a key financial insight: **greater model complexity does not guarantee improved forecast accuracy**, particularly for short-term price-level forecasting.
 
 ## Dashboard Preview
-[![Project Cover](resources/dashboard.png)](comparative_time_series_forecasting.pdf)
+[![Project Cover](resources/dashboard.png)](https://shkungulio.shinyapps.io/stocks_time_series_dashboard/)
 
 An interactive **Shiny Flexdashboard** accompanies this analysis to support exploratory comparison and stakeholder-friendly interpretation. The dashboard includes:
 
