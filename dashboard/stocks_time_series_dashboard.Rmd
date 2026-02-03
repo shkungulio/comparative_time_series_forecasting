@@ -15,24 +15,22 @@ runtime: shiny
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
-                      fig.width = 10, fig.height = 6)
-
-# Set default CRAN mirror
-options(repos = c(CRAN = "https://cloud.r-project.org"))
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
 
 #Install the following libraries if required
-# List of required packages
-required_pkgs <- c("flexdashboard", "tidyverse", "scales", "forecast", "shiny",
-                   "quantmod", "xts", "zoo", "PerformanceAnalytics", "patchwork") 
+library(shiny)
+library(flexdashboard)
+library(tidyverse)
+library(scales)
+library(forecast)
+library(quantmod)
+library(xts)
+library(zoo)
+library(PerformanceAnalytics)
+library(patchwork)
 
-# Install and load each package
-for (pkg in required_pkgs) {
-  if (!requireNamespace(pkg, quietly = TRUE)) {
-    install.packages(pkg)
-  }
-  library(pkg, character.only = TRUE)
-}
+options(scipen = 999)
+theme_set(theme_gray(base_size = 12))
 ```
 
 ```{r helpers}
@@ -47,11 +45,27 @@ make_train_test <- function(x, h = 60){
   list(train = x[1:(n-h)], test = x[(n-h+1):n], h = h)
 }
 
-# Best model per stock from the report (by RMSE):
-# AAPL -> ARIMA, AMZN -> ARIMA, MSFT -> Naive, TSLA -> Naive
+# Best model per stock from the forecasting report (by RMSE)
+# Key finding: the Naive (random-walk) baseline is #1 for every ticker (TSLA is essentially tied).
 best_model_map <- tibble::tibble(
-  ticker = c("AAPL","AMZN","MSFT","TSLA"),
-  best_model = c("ARIMA","ARIMA","Naive","Naive")
+  ticker = c("AAPL","MSFT","TSLA","AMZN"),
+  best_model = c("Naive","Naive","Naive","Naive")
+)
+
+# Reported holdout results (h = 60) from the forecasting analysis (for reference/benchmark)
+report_results <- tibble::tibble(
+  ticker = c("AAPL","AAPL","AMZN","AMZN","MSFT","MSFT","TSLA","TSLA"),
+  model  = c("Naive","ARIMA","Naive","ARIMA","Naive","ARIMA","Naive","ARIMA"),
+  RMSE   = c(9.381, 11.092, 21.271, 23.500, 39.808, 46.206, 35.506, 35.506),
+  MAE    = c(7.587,  8.097, 19.656, 22.056, 35.896, 41.737, 30.770, 30.770),
+  MAPE   = c(2.860,  3.088,  8.518,  9.540,  7.602,  8.837,  7.184,  7.184)
+)
+
+forecastability_tbl <- tibble::tibble(
+  ticker = c("AAPL","AMZN","TSLA","MSFT"),
+  best_model = c("Naive","Naive","Naive","Naive"),
+  RMSE_best  = c(9.381, 21.271, 35.506, 39.808),
+  forecastability_rank = 1:4
 )
 
 fit_and_forecast <- function(x_train, h, model){
@@ -133,8 +147,7 @@ performance_summary_gg <- function(ret_xts, ticker_name = "Asset",
       title = paste0("Equity Curve (Cumulative Return): ", ticker_name),
       x = NULL, y = "Cumulative Return"
     ) +
-    scale_y_continuous(labels = scales::percent) +
-    theme_minimal()
+    scale_y_continuous(labels = scales::percent)
 
   p_dd <- ggplot(df, aes(x = date, y = drawdown)) +
     geom_area(alpha = 0.6) +
@@ -142,8 +155,7 @@ performance_summary_gg <- function(ret_xts, ticker_name = "Asset",
       title = "Drawdown",
       x = NULL, y = "Drawdown"
     ) +
-    scale_y_continuous(labels = scales::percent) +
-    theme_minimal()
+    scale_y_continuous(labels = scales::percent)
 
   p_vol <- ggplot(df, aes(x = date, y = roll_vol)) +
     geom_line(linewidth = 0.7) +
@@ -151,8 +163,7 @@ performance_summary_gg <- function(ret_xts, ticker_name = "Asset",
       title = paste0("Rolling Volatility (", roll_window, "-day, Annualized)"),
       x = NULL, y = "Volatility"
     ) +
-    scale_y_continuous(labels = scales::percent) +
-    theme_minimal()
+    scale_y_continuous(labels = scales::percent)
 
   p_stats <- ggplot(stats_df, aes(x = reorder(metric, value), y = value)) +
     geom_col() +
@@ -162,7 +173,6 @@ performance_summary_gg <- function(ret_xts, ticker_name = "Asset",
       title = "Key Metrics",
       x = NULL, y = NULL
     ) +
-    theme_minimal() +
     theme(panel.grid.minor = element_blank())
 
   # Combine
@@ -193,7 +203,7 @@ dateRangeInput(
 sliderInput(
   "h",
   "Forecast horizon (trading days)",
-  min = 0, max = 120, value = 30, step = 20
+  min = 20, max = 120, value = 60, step = 20
 )
 
 radioButtons(
@@ -235,6 +245,21 @@ renderValueBox({
     caption = paste(tk, "best-performing model (by RMSE) from the project report"),
     icon = "line-chart",
     color = "primary"
+  )
+})
+```
+
+### Forecastability rank
+
+```{r}
+renderValueBox({
+  tk <- input$ticker
+  rk <- forecastability_tbl$forecastability_rank[forecastability_tbl$ticker == tk]
+  valueBox(
+    value = paste0("Rank ", rk, " of 4"),
+    caption = "Lower RMSE = more predictable (from project holdout evaluation)",
+    icon = "signal",
+    color = ifelse(rk == 1, "success", ifelse(rk <= 2, "info", "warning"))
   )
 })
 ```
@@ -314,7 +339,64 @@ renderPlot({
   performance_summary_gg(ret, ticker_name = tk, roll_window = 20)
 }, height = 500, width = "auto")
 ```
-> This panel summarizes return behavior, risk, and drawdowns over time, combining cumulative performance, volatility dynamics, and downside risk into a single, investor-oriented view.
+ > This panel summarizes return behavior, risk, and drawdowns over time, combining cumulative performance, volatility dynamics, and downside risk into a single, investor-oriented view.
+
+#### Comparative view (all tickers)
+
+```{r}
+renderPlot({
+  rng <- input$daterange
+  tickers <- c("AAPL","MSFT","TSLA","AMZN")
+
+  close_list <- purrr::map(tickers, ~ as_close_xts(.x, rng[1], rng[2]))
+  names(close_list) <- tickers
+
+  close_xts <- do.call(merge, close_list)
+  colnames(close_xts) <- tickers
+  close_xts <- na.omit(close_xts)
+
+  close_df <- to_df_long(close_xts, "close") %>%
+    group_by(ticker) %>%
+    arrange(date) %>%
+    mutate(index_100 = 100 * close / first(close)) %>%
+    ungroup()
+
+  ggplot(close_df, aes(date, index_100, color = ticker)) +
+    geom_line() +
+    labs(
+      title = "Indexed Closing Prices (Start = 100) — All Tickers",
+      x = NULL, y = "Index"
+    )
+}, height = 240, width = "auto")
+```
+
+```{r}
+renderPlot({
+  rng <- input$daterange
+  roll_n <- input$roll_n
+  tickers <- c("AAPL","MSFT","TSLA","AMZN")
+
+  close_list <- purrr::map(tickers, ~ as_close_xts(.x, rng[1], rng[2]))
+  names(close_list) <- tickers
+
+  close_xts <- do.call(merge, close_list)
+  colnames(close_xts) <- tickers
+  close_xts <- na.omit(close_xts)
+
+  ret_xts <- na.omit(PerformanceAnalytics::Return.calculate(close_xts, method = "log"))
+  vol_xts <- roll_volatility(ret_xts, window = roll_n)
+  vol_df  <- to_df_long(vol_xts, "roll_sd")
+
+  ggplot(vol_df, aes(date, roll_sd, color = ticker)) +
+    geom_line() +
+    labs(
+      title = paste0("Rolling Volatility (Std Dev of Returns) — ", roll_n, " Trading Days"),
+      x = NULL, y = "Rolling SD"
+    )
+}, height = 240, width = "auto")
+```
+
+> These two charts replicate the report’s cross-stock lens: **relative growth** (indexed prices) and **risk regime shifts** (rolling volatility).
 
 ### **Forecast**
 
